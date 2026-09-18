@@ -23,19 +23,25 @@ def load_sell_in_data():
     try:
         url = f"https://drive.google.com/uc?id={FILE_ID_SELL_IN}"
         
-        # Download sem argumentos extras incompatíveis
+        # Download do ficheiro se não existir localmente no container
         if not os.path.exists(LOCAL_FILE):
             gdown.download(url, LOCAL_FILE, quiet=True)
             
+        # Leitura direta da aba 1-Dados (com cabeçalho na linha 1)
         df = pd.read_excel(LOCAL_FILE, sheet_name="1-Dados", engine="openpyxl")
         
-        # REGRAS DE OURO:
+        # Limpeza de espaços em branco nos nomes das colunas
+        df.columns = [str(c).strip() for c in df.columns]
+
+        # REGRAS DE OURO
         # 1. Filtro de Status = 5 ou 6
+        df['STATUS'] = pd.to_numeric(df['STATUS'], errors='coerce')
         df = df[df['STATUS'].isin([5, 6])]
         
         # 2. Filtro de Almoxarifado = 20
-        df = df[df['Almox.'].astype(str).str.strip() == '20']
+        df = df[df['Almox.'].astype(str).str.strip().str.replace('.0', '', regex=False) == '20']
         
+        # Tratar tipos de dados de datas e valores numéricos
         df['Emissao'] = pd.to_datetime(df['Emissao'], errors='coerce')
         df['Quantidade'] = pd.to_numeric(df['Quantidade'], errors='coerce').fillna(0)
         df['Vlr.Total'] = pd.to_numeric(df['Vlr.Total'], errors='coerce').fillna(0)
