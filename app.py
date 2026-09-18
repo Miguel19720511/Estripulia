@@ -81,6 +81,7 @@ def load_sell_out_vertical():
                 url = f"https://drive.google.com/uc?id={file_id}"
                 gdown.download(url, local_file, quiet=True)
             
+            # Leitura sem ignorar cabeçalhos
             df = pd.read_excel(local_file, engine="openpyxl")
             if df.empty:
                 continue
@@ -95,36 +96,43 @@ def load_sell_out_vertical():
         return pd.DataFrame()
 
     raw_df = pd.concat(all_rows, ignore_index=True)
-    cols_map = {str(c).strip().upper(): c for c in raw_df.columns}
     
-    # Identificação flexível de colunas
-    ref_col = cols_map.get('REFERÊNCIA') or cols_map.get('REFERENCIA') or cols_map.get('REF') or raw_df.columns[0]
-    desc_col = cols_map.get('DESCRIÇÃO') or cols_map.get('DESCRICAO') or cols_map.get('PRODUTO') or raw_df.columns[1]
-    loja_nom_col = cols_map.get('LOJA') or cols_map.get('NOME LOJA') or cols_map.get('LOJA CLIENTE') or raw_df.columns[2]
-    loja_num_col = cols_map.get('Nº LOJA') or cols_map.get('NO LOJA') or cols_map.get('COD LOJA') or raw_df.columns[3]
-    
+    # Criar mapeamento de colunas em maiúsculas e sem acentos
+    cols_clean = {str(c).strip().upper().replace('Ê','E').replace('Ç','C').replace('Ã','A').replace('Õ','O'): c for c in raw_df.columns}
+
+    # Identificação precisa de colunas
+    ref_col = cols_clean.get('REFERENCIA') or cols_clean.get('REF') or cols_clean.get('CODIGO') or raw_df.columns[0]
+    desc_col = cols_clean.get('DESCRICAO') or cols_clean.get('PRODUTO') or cols_clean.get('NOME') or raw_df.columns[1]
+    loja_nom_col = cols_clean.get('LOJA') or cols_clean.get('NOME LOJA') or raw_df.columns[2]
+    loja_num_col = cols_clean.get('N LOJA') or cols_clean.get('NO LOJA') or cols_clean.get('COD LOJA') or raw_df.columns[3]
+
+    # Identificação precisa de Venda e Estoque
+    venda_col = (cols_clean.get('VENDA') or cols_clean.get('QTD VENDA') or 
+                 cols_clean.get('QUANTIDADE') or cols_clean.get('QTD') or
+                 [c for c in raw_df.columns if 'VENDA' in str(c).upper() or 'QTD' in str(c).upper()][0] 
+                 if any('VENDA' in str(c).upper() or 'QTD' in str(c).upper() for c in raw_df.columns) else None)
+                 
+    est_col = (cols_clean.get('ESTOQUE') or cols_clean.get('SALDO') or 
+               cols_clean.get('ESTOQUE ATUAL') or
+               [c for c in raw_df.columns if 'EST' in str(c).upper() or 'SALDO' in str(c).upper()][0]
+               if any('EST' in str(c).upper() or 'SALDO' in str(c).upper() for c in raw_df.columns) else None)
+
     consolidated = pd.DataFrame()
+    
+    # Correção dos campos invertidos
     consolidated['Referencia'] = raw_df[ref_col].astype(str)
     consolidated['Descrição'] = raw_df[desc_col].astype(str)
     consolidated['Loja (Nomenclatura)'] = raw_df[loja_nom_col].astype(str)
     consolidated['Nº Loja Sistema'] = raw_df[loja_num_col].astype(str)
     consolidated['Ordem_Arquivo'] = raw_df['Ordem_Arquivo']
     
-    # Função segura para obtenção de séries numéricas
-    def safe_get_series(possible_names):
-        for name in possible_names:
-            actual_col = cols_map.get(name)
-            if actual_col and actual_col in raw_df.columns:
-                return pd.to_numeric(raw_df[actual_col], errors='coerce').fillna(0)
-        return pd.Series(0, index=raw_df.index)
-
-    consolidated['Venda_Mes'] = safe_get_series(['VENDA', 'QTD VENDA', 'QUANTIDADE VENDA', 'VENDA UN', 'VENDA AGO'])
-    consolidated['Estoque_Mes'] = safe_get_series(['ESTOQUE', 'ESTOQUE ATUAL', 'SALDO ESTOQUE', 'ESTOQUE ULT MES'])
+    consolidated['Venda_Mes'] = pd.to_numeric(raw_df[venda_col] if venda_col else 0, errors='coerce').fillna(0)
+    consolidated['Estoque_Mes'] = pd.to_numeric(raw_df[est_col] if est_col else 0, errors='coerce').fillna(0)
 
     max_ordem = consolidated['Ordem_Arquivo'].max()
-    ordem_ult3 = max_ordem - 2
+    ordem_ult3 = max(0, max_ordem - 2)
 
-    # Agrupamento e Cálculos
+    # Agrupamento Vertical Único
     def calc_group(g):
         venda_acumulada = g['Venda_Mes'].sum()
         venda_3m = g[g['Ordem_Arquivo'] >= ordem_ult3]['Venda_Mes'].sum()
@@ -132,18 +140,17 @@ def load_sell_out_vertical():
         g_ult = g[g['Ordem_Arquivo'] == max_ordem]
         venda_ult_mes = g_ult['Venda_Mes'].sum() if not g_ult.empty else 0
         
-        estoque_ult_mes_idx = g_ult['Estoque_Mes'].last_valid_index() if not g_ult.empty else None
-        estoque_val = g.loc[estoque_ult_mes_idx, 'Estoque_Mes'] if estoque_ult_mes_idx is not None else 0
+        estoque_val = g_ult['Estoque_Mes'].values[-1] if not g_ult.empty else 0
         
         vdm = venda_3m / 90.0 if venda_3m > 0 else 0
-        giro = ((venda_ult_mes / (estoque_val + 0.0001)) * 100) if estoque_val > 0 else 0
-        cobertura = (estoque_val / (vdm + 0.0001)) if vdm > 0 else (999 if estoque_val > 0 else 0)
+        giro = ((venda_ult_mes / estoque_val) * 100) if estoque_val > 0 else 0
+        cobertura = (estoque_val / vdm) if vdm > 0 else (999.0 if estoque_val > 0 else 0.0)
 
         return pd.Series({
-            'Venda Acumulada': venda_acumulada,
-            'Venda 3M': venda_3m,
-            'Venda Últ. Mês': venda_ult_mes,
-            'Estoque Últ. Mês': estoque_val,
+            'Venda Acumulada': int(venda_acumulada),
+            'Venda 3M': int(venda_3m),
+            'Venda Últ. Mês': int(venda_ult_mes),
+            'Estoque Últ. Mês': int(estoque_val),
             'Giro (%)': round(giro, 2),
             'Dias de Cobertura': round(cobertura, 1)
         })
