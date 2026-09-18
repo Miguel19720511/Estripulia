@@ -33,7 +33,7 @@ FILE_IDS = {
 }
 
 # -----------------------------------------------------------------------------
-# FUNÇÕES DE CARREGAMENTO
+# CARREGAMENTO SELL-IN
 # -----------------------------------------------------------------------------
 @st.cache_data
 def load_sell_in_data():
@@ -71,6 +71,9 @@ def load_sell_in_data():
         st.error(f"Erro ao carregar Sell-In: {e}")
         return pd.DataFrame()
 
+# -----------------------------------------------------------------------------
+# CARREGAMENTO DA TABELA DE LOJAS (DE-PARA)
+# -----------------------------------------------------------------------------
 @st.cache_data
 def load_nomenclatura_lojas():
     local_file = "nomenclatura_lojas.xlsx"
@@ -80,26 +83,30 @@ def load_nomenclatura_lojas():
             gdown.download(url, local_file, quiet=True)
             
         df = pd.read_excel(local_file, engine="openpyxl")
-        df.columns = [str(c).strip().upper() for c in df.columns]
+        df.columns = [str(c).strip() for c in df.columns]
         
-        cols_clean = {c.replace('Ç','C').replace('Ã','A').replace('Õ','O').replace('É','E'): c for c in df.columns}
+        # Mapeamento estrito baseado no formato do cadastro
+        cols_map = {str(c).strip().upper().replace(' ', ''): c for c in df.columns}
         
-        loja_nom = cols_clean.get('LOJA') or cols_clean.get('NOMENCLATURA') or df.columns[0]
-        cod_master = cols_clean.get('CODIGO MASTER') or cols_clean.get('MASTER') or df.columns[1]
-        num_loja = cols_clean.get('NO LOJA') or cols_clean.get('NUMERO LOJA') or cols_clean.get('LOJA SISTEMA') or df.columns[2]
-        cnpj_col = cols_clean.get('CNPJ') or df.columns[3] if len(df.columns) > 3 else None
-        
+        nom_col = cols_map.get('NOMENCLATURACLIENTE') or cols_map.get('NOMENCLATURA')
+        cod_col = cols_map.get('CODIGO') or cols_map.get('CODIGOMASTER')
+        num_col = cols_map.get('LOJA') or cols_map.get('NOLOJA')
+        cnpj_col = cols_map.get('CNPJ/CPF') or cols_map.get('CNPJ')
+
         loja_df = pd.DataFrame()
-        loja_df['Loja (Nomenclatura)'] = df[loja_nom].astype(str).str.strip()
-        loja_df['Código Máster'] = df[cod_master].astype(str).str.strip()
-        loja_df['Nº Loja Sistema'] = df[num_loja].astype(str).str.strip()
-        loja_df['CNPJ'] = df[cnpj_col].astype(str).str.strip() if cnpj_col else "N/A"
+        loja_df['Loja (Nomenclatura)'] = df[nom_col].astype(str).str.strip()
+        loja_df['Código Máster'] = df[cod_col].astype(str).str.strip()
+        loja_df['Nº Loja Sistema'] = df[num_col].astype(str).str.strip()
+        loja_df['CNPJ'] = df[cnpj_col].astype(str).str.strip()
         
         return loja_df.drop_duplicates(subset=['Loja (Nomenclatura)'])
     except Exception as e:
-        st.warning(f"Aviso ao carregar tabela de lojas: {e}")
+        st.warning(f"Aviso ao carregar cadastro de lojas: {e}")
         return pd.DataFrame()
 
+# -----------------------------------------------------------------------------
+# CONSOLIDAÇÃO DE SELL-OUT VERTICAL
+# -----------------------------------------------------------------------------
 @st.cache_data
 def load_sell_out_vertical():
     df_lojas = load_nomenclatura_lojas()
@@ -127,19 +134,18 @@ def load_sell_out_vertical():
     raw_df = pd.concat(all_rows, ignore_index=True)
     
     consolidated = pd.DataFrame()
-    # Posição 0: Descrição do Produto | Posição 1: Referência/Código Curto
-    consolidated['Descrição'] = raw_df.iloc[:, 0].astype(str).str.strip()
-    consolidated['Referencia'] = raw_df.iloc[:, 1].astype(str).str.strip()
-    
-    # Posição 2: Nome da Loja vindo do Sell-Out
+    # Posições do relatório de Sell-Out:
+    # 0: Código/Referência | 1: Descrição do Produto | 2: Nome da Loja (Nomenclatura Cliente)
+    consolidated['Referencia'] = raw_df.iloc[:, 0].astype(str).str.strip()
+    consolidated['Descrição'] = raw_df.iloc[:, 1].astype(str).str.strip()
     consolidated['Loja (Nomenclatura)'] = raw_df.iloc[:, 2].astype(str).str.strip()
     consolidated['Ordem_Arquivo'] = raw_df['Ordem_Arquivo']
     
-    # Vendas e Estoque
+    # Posições de Venda e Estoque do Relatório
     consolidated['Venda_Mes'] = pd.to_numeric(raw_df.iloc[:, 4], errors='coerce').fillna(0)
     consolidated['Estoque_Mes'] = pd.to_numeric(raw_df.iloc[:, 5], errors='coerce').fillna(0)
 
-    # Cruzamento dinâmico com a tabela de Nomenclatura das Lojas (De-Para)
+    # Cruzamento de-para com a tabela de lojas
     if not df_lojas.empty:
         consolidated = consolidated.merge(df_lojas, on='Loja (Nomenclatura)', how='left')
         consolidated['Código Máster'] = consolidated['Código Máster'].fillna("Pendente Cadastro")
@@ -147,13 +153,13 @@ def load_sell_out_vertical():
         consolidated['CNPJ'] = consolidated['CNPJ'].fillna("Pendente")
     else:
         consolidated['Código Máster'] = "N/A"
-        consolidated['Nº Loja Sistema'] = raw_df.iloc[:, 3].astype(str).str.strip()
+        consolidated['Nº Loja Sistema'] = "N/A"
         consolidated['CNPJ'] = "N/A"
 
     max_ordem = consolidated['Ordem_Arquivo'].max()
     ordem_ult3 = max(0, max_ordem - 2)
 
-    # Consolidação e Cálculos
+    # Consolidação e Cálculos de Giro/Cobertura
     def calc_group(g):
         venda_acumulada = g['Venda_Mes'].sum()
         venda_3m = g[g['Ordem_Arquivo'] >= ordem_ult3]['Venda_Mes'].sum()
@@ -181,13 +187,13 @@ def load_sell_out_vertical():
 
     return final_df
 
-# Carregamento
+# Carregamento Geral
 with st.spinner("A cruzar cadastro de lojas e a consolidar vendas de Sell-Out..."):
     df_sell_in = load_sell_in_data()
     df_sell_out_vert = load_sell_out_vertical()
 
 # -----------------------------------------------------------------------------
-# ESTRUTURA DAS ABAS
+# INTERFACE DE UTILIZADOR (TABS)
 # -----------------------------------------------------------------------------
 tab1, tab2, tab3 = st.tabs([
     "📈 Visão Executiva (Sell-In)", 
@@ -219,7 +225,7 @@ with tab1:
         )
         st.plotly_chart(fig_ano, use_container_width=True)
 
-# TAB 2: SELL-OUT VERTICAL COM DE-PARA DE LOJAS
+# TAB 2: SELL-OUT VERTICAL
 with tab2:
     st.subheader("Sell-Out Consolidado Vertical (Empilhado por Loja e Produto)")
     
