@@ -81,12 +81,10 @@ def load_sell_out_vertical():
                 url = f"https://drive.google.com/uc?id={file_id}"
                 gdown.download(url, local_file, quiet=True)
             
-            # Leitura sem ignorar cabeçalhos
             df = pd.read_excel(local_file, engine="openpyxl")
-            if df.empty:
+            if df.empty or df.shape[1] < 6:
                 continue
                 
-            df.columns = [str(c).strip() for c in df.columns]
             df['Ordem_Arquivo'] = idx
             all_rows.append(df)
         except Exception:
@@ -97,49 +95,36 @@ def load_sell_out_vertical():
 
     raw_df = pd.concat(all_rows, ignore_index=True)
     
-    # Criar mapeamento de colunas em maiúsculas e sem acentos
-    cols_clean = {str(c).strip().upper().replace('Ê','E').replace('Ç','C').replace('Ã','A').replace('Õ','O'): c for c in raw_df.columns}
-
-    # Identificação precisa de colunas
-    ref_col = cols_clean.get('REFERENCIA') or cols_clean.get('REF') or cols_clean.get('CODIGO') or raw_df.columns[0]
-    desc_col = cols_clean.get('DESCRICAO') or cols_clean.get('PRODUTO') or cols_clean.get('NOME') or raw_df.columns[1]
-    loja_nom_col = cols_clean.get('LOJA') or cols_clean.get('NOME LOJA') or raw_df.columns[2]
-    loja_num_col = cols_clean.get('N LOJA') or cols_clean.get('NO LOJA') or cols_clean.get('COD LOJA') or raw_df.columns[3]
-
-    # Identificação precisa de Venda e Estoque
-    venda_col = (cols_clean.get('VENDA') or cols_clean.get('QTD VENDA') or 
-                 cols_clean.get('QUANTIDADE') or cols_clean.get('QTD') or
-                 [c for c in raw_df.columns if 'VENDA' in str(c).upper() or 'QTD' in str(c).upper()][0] 
-                 if any('VENDA' in str(c).upper() or 'QTD' in str(c).upper() for c in raw_df.columns) else None)
-                 
-    est_col = (cols_clean.get('ESTOQUE') or cols_clean.get('SALDO') or 
-               cols_clean.get('ESTOQUE ATUAL') or
-               [c for c in raw_df.columns if 'EST' in str(c).upper() or 'SALDO' in str(c).upper()][0]
-               if any('EST' in str(c).upper() or 'SALDO' in str(c).upper() for c in raw_df.columns) else None)
-
+    # Mapeamento por Posição de Coluna (Índice Direto)
+    # Ajuste dos índices para alinhar Referência, Descrição, Loja, Vendas e Estoque
     consolidated = pd.DataFrame()
     
-    # Correção dos campos invertidos
-    consolidated['Referencia'] = raw_df[ref_col].astype(str)
-    consolidated['Descrição'] = raw_df[desc_col].astype(str)
-    consolidated['Loja (Nomenclatura)'] = raw_df[loja_nom_col].astype(str)
-    consolidated['Nº Loja Sistema'] = raw_df[loja_num_col].astype(str)
+    # 0: Código/Referência real | 1: Descrição do Produto
+    consolidated['Referencia'] = raw_df.iloc[:, 1].astype(str)
+    consolidated['Descrição'] = raw_df.iloc[:, 0].astype(str)
+    
+    # Colunas de identificação da Loja
+    consolidated['Loja (Nomenclatura)'] = raw_df.iloc[:, 2].astype(str)
+    consolidated['Nº Loja Sistema'] = raw_df.iloc[:, 3].astype(str)
     consolidated['Ordem_Arquivo'] = raw_df['Ordem_Arquivo']
     
-    consolidated['Venda_Mes'] = pd.to_numeric(raw_df[venda_col] if venda_col else 0, errors='coerce').fillna(0)
-    consolidated['Estoque_Mes'] = pd.to_numeric(raw_df[est_col] if est_col else 0, errors='coerce').fillna(0)
+    # Vendas e Estoques mapeados das colunas numéricas
+    venda_series = pd.to_numeric(raw_df.iloc[:, 4], errors='coerce').fillna(0)
+    estoque_series = pd.to_numeric(raw_df.iloc[:, 5], errors='coerce').fillna(0)
+    
+    consolidated['Venda_Mes'] = venda_series
+    consolidated['Estoque_Mes'] = estoque_series
 
     max_ordem = consolidated['Ordem_Arquivo'].max()
     ordem_ult3 = max(0, max_ordem - 2)
 
-    # Agrupamento Vertical Único
+    # Consolidação Vertical Única por SKU e Loja
     def calc_group(g):
         venda_acumulada = g['Venda_Mes'].sum()
         venda_3m = g[g['Ordem_Arquivo'] >= ordem_ult3]['Venda_Mes'].sum()
         
         g_ult = g[g['Ordem_Arquivo'] == max_ordem]
         venda_ult_mes = g_ult['Venda_Mes'].sum() if not g_ult.empty else 0
-        
         estoque_val = g_ult['Estoque_Mes'].values[-1] if not g_ult.empty else 0
         
         vdm = venda_3m / 90.0 if venda_3m > 0 else 0
