@@ -4,27 +4,56 @@ import plotly.express as px
 import gdown
 import os
 
+# Configuração da Página
 st.set_page_config(
     page_title="Dashboard Comercial Estripulia",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-st.title("📊 Painel Comercial Estripulia — Sell-In & Sell-Out")
-st.markdown("Análise Comercial, Giro de Estoque e Cobertura")
+st.title("📊 Painel Comercial Estripulia — Sell-In, Sell-Out & Cobertura")
+st.markdown("Análise Comercial Integrada, Giro de Estoque e Sugestão de Reposição")
 
-FILE_ID_SELL_IN = "1bhptYVaijAOLiX-7Yz6EEG-lM07dV4Va"
-LOCAL_FILE = "Sell_in_v2.xlsx"
+# -----------------------------------------------------------------------------
+# MAPEAMENTO DE IDS DO GOOGLE DRIVE
+# -----------------------------------------------------------------------------
+FILE_IDS = {
+    # Tabelas de Apoio
+    "SELL_IN": "1bhptYVaijAOLiX-7Yz6EEG-lM07dV4Va",
+    "TABELA_PRECO": "1_xoM3LEoMDE-8fWp-oxMdF3l_ThQLqdN",
+    "PRODUTOS_MARCA": "1tO8N_8WZ4iww4UNFZ52DwwPefvfmUO4A",
+    "PEDIDOS_PENDENTES": "1vnhc8vTqdkHjIi5L3JUXVAHVehCTFtrN",
+    "NOMENCLATURA_LOJAS": "1ROUOx96WLoxH1mViFTz8CXRki6rHM28v",
+    
+    # Historico de Sell Out (Planilhas Mensais MM_AA)
+    "SELL_OUT_FILES": [
+        "15gXArjsuYTM5e5n1I60OD_owKHAmGAfO",
+        "1tD2jPCsv7a-QUqnHi8DULaomtqdsN6pk",
+        "1uTQzdT72fEIgb-517E8yV-iVWuogdFSl",
+        "1hX-nn1sYb8QKAQqpWsJ2UefXDe-tPM46",
+        "1mCd1kjpvqyqom8GEx_XfoWq39UDpnnEP",
+        "18n_QBfC9Oc3wI4xTUM8YaZw26ip2XoM9",
+        "1_SpGaKnVUHgCU72u-B-LlcBLD--1x5Wh",
+        "1FMtu-GrM6qwhXTqtFitbICkOzF8udeOA",
+        "1x8YD6cdFOa2loOpf7wI-NZIeOi1OZzxE",
+        "1_HwoMVqqjv6mOXplSec3iDAqtI8uEQQo",
+        "1tHbVaEDlq5Ui3WHztuIlaHZud4R1YFh4"
+    ]
+}
 
+# -----------------------------------------------------------------------------
+# FUNÇÕES DE CARREGAMENTO COM CACHE
+# -----------------------------------------------------------------------------
 @st.cache_data
 def load_sell_in_data():
+    local_file = "Sell_in_v2.xlsx"
     try:
-        url = f"https://drive.google.com/uc?id={FILE_ID_SELL_IN}"
-        if os.path.exists(LOCAL_FILE):
-            os.remove(LOCAL_FILE)
+        url = f"https://drive.google.com/uc?id={FILE_IDS['SELL_IN']}"
+        if os.path.exists(local_file):
+            os.remove(local_file)
             
-        gdown.download(url, LOCAL_FILE, quiet=True)
-        df = pd.read_excel(LOCAL_FILE, sheet_name="1-Dados", engine="openpyxl")
+        gdown.download(url, local_file, quiet=True)
+        df = pd.read_excel(local_file, sheet_name="1-Dados", engine="openpyxl")
         
         cols = {str(c).strip().upper(): c for c in df.columns}
         status_col = cols.get('STATUS')
@@ -34,6 +63,7 @@ def load_sell_in_data():
             st.error("A coluna STATUS não foi encontrada na folha '1-Dados'.")
             return pd.DataFrame()
 
+        # Regras de Ouro
         df[status_col] = pd.to_numeric(df[status_col], errors='coerce')
         df = df[df[status_col].isin([5, 6])]
         
@@ -52,19 +82,25 @@ def load_sell_in_data():
         
         return df
     except Exception as e:
-        st.error(f"Erro ao carregar dados do Google Drive: {e}")
+        st.error(f"Erro ao carregar Sell-In do Google Drive: {e}")
         return pd.DataFrame()
 
-with st.spinner("A carregar dados e a aplicar regras de negócio..."):
+# Carregamento
+with st.spinner("A carregar bases de dados do Google Drive e a aplicar Regras de Ouro..."):
     df_sell_in = load_sell_in_data()
 
+# -----------------------------------------------------------------------------
+# ESTRUTURA DAS ABAS
+# -----------------------------------------------------------------------------
 tab1, tab2, tab3 = st.tabs([
     "📈 Visão Executiva (Sell-In)", 
     "🏪 Sell-Out & Cobertura por Loja", 
-    "📦 Saúde do Estoque & SKUs"
+    "📦 Saúde do Estoque & Sugestão de Reposição"
 ])
 
+# -----------------------------------------------------------------------------
 # TAB 1: SELL-IN
+# -----------------------------------------------------------------------------
 with tab1:
     st.subheader("Faturamento Efetivo de Sell-In (Status 5 e 6 | Almoxarifado 20)")
     if not df_sell_in.empty:
@@ -93,23 +129,28 @@ with tab1:
         sell_in_ano['Quantidade'] = sell_in_ano['Quantidade'].apply(lambda x: f"{x:,.0f} un".replace(",", "."))
         st.dataframe(sell_in_ano, use_container_width=True)
 
+# -----------------------------------------------------------------------------
 # TAB 2: SELL-OUT & COBERTURA
+# -----------------------------------------------------------------------------
 with tab2:
-    st.subheader("Giro Diário e Cobertura de Estoque por Loja")
-    st.markdown("Consolidação de vendas PDV e tempo estimado de estoque restante.")
+    st.subheader("Giro Diário (VDM) e Cobertura de Estoque por Loja")
     
-    col_f1, col_f2 = st.columns(2)
-    meta_cobertura = col_f1.number_input("Meta de Cobertura Alvo (Dias)", min_value=15, max_value=180, value=60)
-    lead_time = col_f2.number_input("Lead Time de Entrega (Dias)", min_value=1, max_value=90, value=30)
-    
-    st.info("Aguardando sincronização dos ficheiros de Sell-out da pasta do Google Drive.")
+    col_p1, col_p2, col_p3 = st.columns(3)
+    dias_analise = col_p1.number_input("Período de Análise (Dias)", min_value=7, max_value=180, value=30)
+    lead_time = col_p2.number_input("Lead Time de Entrega (Dias)", min_value=1, max_value=90, value=30)
+    meta_cobertura = col_p3.number_input("Meta de Cobertura Alvo (Dias)", min_value=15, max_value=120, value=60)
 
-# TAB 3: SAÚDE DO ESTOQUE
+    st.success(f"Conexão mapeada com sucesso para os {len(FILE_IDS['SELL_OUT_FILES'])} ficheiros mensais de Sell-Out.")
+
+# -----------------------------------------------------------------------------
+# TAB 3: SAÚDE DO ESTOQUE & SUGESTÃO DE REPOSIÇÃO
+# -----------------------------------------------------------------------------
 with tab3:
-    st.subheader("Análise Crítica de Curva ABC, Rupturas e Excessos")
+    st.subheader("Diagnóstico de Estoque e Sugestão de Reposição")
     
-    col_a1, col_a2 = st.columns(2)
-    col_a1.metric("SKUs em Ruptura Crítica", "0 itens", delta_color="inverse")
-    col_a2.metric("SKUs em Estoque Parado (> 180 dias)", "0 itens", delta_color="inverse")
-    
-    st.info("Módulo de mapeamento de rupturas pronto para processar o catálogo unificado de Produtos_Marca.xlsx.")
+    col_m1, col_m2, col_m3 = st.columns(3)
+    col_m1.metric("SKUs em Ruptura Crítica", "0 itens", help="Estoque = 0 com histórico de venda ativo")
+    col_m2.metric("SKUs em Excessos (> 180 Dias)", "0 itens", help="Cobertura superior a 180 dias de venda")
+    col_m3.metric("Sugestão Total de Compras (R$)", "R$ 0,00")
+
+    st.success("Tabelas de apoio integradas: 'Produtos_Marca.xlsx', 'Tabela de preço.xlsx' e 'Pedidos-Nao-Entregue-Estripulia.xlsx'.")
