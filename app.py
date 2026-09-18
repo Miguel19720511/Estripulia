@@ -23,9 +23,9 @@ def load_sell_in_data():
     try:
         url = f"https://drive.google.com/uc?id={FILE_ID_SELL_IN}"
         
-        # Download com parâmetro fuzzy ativado
+        # Download sem argumentos extras incompatíveis
         if not os.path.exists(LOCAL_FILE):
-            gdown.download(url, LOCAL_FILE, quiet=True, fuzzy=True)
+            gdown.download(url, LOCAL_FILE, quiet=True)
             
         df = pd.read_excel(LOCAL_FILE, sheet_name="1-Dados", engine="openpyxl")
         
