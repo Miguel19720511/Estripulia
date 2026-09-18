@@ -16,7 +16,7 @@ st.markdown("Análise Comercial, Giro de Estoque e Cobertura")
 
 # ID do ficheiro Sell In no Google Drive
 FILE_ID_SELL_IN = "1bhptYVaijAOLiX-7Yz6EEG-lM07dV4Va"
-LOCAL_FILE = "Sell_in_temp.xlsx"
+LOCAL_FILE = "Sell_in_v2.xlsx"
 
 @st.cache_data
 def load_sell_in_data():
