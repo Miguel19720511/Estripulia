@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import os
+import requests
+import io
 
 # Configuração da Página
 st.set_page_config(page_title="Dashboard Comercial Estripulia", layout="wide")
@@ -9,14 +10,19 @@ st.set_page_config(page_title="Dashboard Comercial Estripulia", layout="wide")
 st.title("📊 Painel Comercial Estripulia — Sell-In & Sell-Out")
 st.markdown("Análise de Giro, Dias de Cobertura, Saúde de Estoque e Curva ABC")
 
-# Links de acesso aos ficheiros do Drive
-URL_SELL_IN = "https://drive.google.com/uc?export=download&id=1bhptYVaijAOLiX-7Yz6EEG-lM07dV4Va"
+# ID do ficheiro Sell In no Google Drive
+FILE_ID_SELL_IN = "1bhptYVaijAOLiX-7Yz6EEG-lM07dV4Va"
 
 @st.cache_data
 def load_sell_in_drive():
     try:
-        # Leitura direta da base de Sell-in via Google Drive
-        df = pd.read_excel(URL_SELL_IN, sheet_name="1-Dados")
+        # Fazer o download direto do ficheiro usando sessão para contornar a confirmação do Drive
+        session = requests.Session()
+        url = f"https://drive.google.com/uc?export=download&id={FILE_ID_SELL_IN}"
+        response = session.get(url)
+        
+        # Leitura do ficheiro Excel com engine openpyxl
+        df = pd.read_excel(io.BytesIO(response.content), sheet_name="1-Dados", engine="openpyxl")
         
         # REGRAS DE OURO:
         # 1. Apenas STATUS = 5 ou 6
@@ -35,13 +41,12 @@ def load_sell_in_drive():
 with st.spinner("Conectando ao Google Drive e aplicando Regras de Ouro..."):
     df_sell_in = load_sell_in_drive()
 
-# Visualização da Aba 1
+# Visualização
 tab1, tab2, tab3 = st.tabs(["📈 Visão Executiva (Sell-In)", "🏪 Sell-Out & Cobertura por Loja", "📦 Saúde do Estoque & SKUs"])
 
 with tab1:
     st.subheader("Faturamento Efetivo de Sell-In (Status 5 e 6 | Almoxarifado 20)")
     if not df_sell_in.empty:
-        # Tratamento numérico de colunas
         df_sell_in['Quantidade'] = pd.to_numeric(df_sell_in['Quantidade'], errors='coerce').fillna(0)
         df_sell_in['Vlr.Total'] = pd.to_numeric(df_sell_in['Vlr.Total'], errors='coerce').fillna(0)
         df_sell_in['Vlr.Bruto'] = pd.to_numeric(df_sell_in['Vlr.Bruto'], errors='coerce').fillna(0)
@@ -55,7 +60,6 @@ with tab1:
         col2.metric("Faturamento Líquido", f"R$ {total_liq:,.2f}")
         col3.metric("Faturamento Bruto", f"R$ {total_bruto:,.2f}")
 
-        # Gráfico por Ano
         df_sell_in['Ano'] = df_sell_in['Emissao'].dt.year
         sell_in_ano = df_sell_in.groupby('Ano').agg({'Vlr.Total': 'sum', 'Quantidade': 'sum'}).reset_index()
 
