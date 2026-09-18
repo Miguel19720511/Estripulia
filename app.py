@@ -86,7 +86,7 @@ def load_sell_out_vertical():
                 continue
                 
             df.columns = [str(c).strip() for c in df.columns]
-            df['Ordem_Arquivo'] = idx  # Identifica a sequência temporal dos meses
+            df['Ordem_Arquivo'] = idx
             all_rows.append(df)
         except Exception:
             continue
@@ -97,13 +97,11 @@ def load_sell_out_vertical():
     raw_df = pd.concat(all_rows, ignore_index=True)
     cols_map = {str(c).strip().upper(): c for c in raw_df.columns}
     
-    # Mapeamento flexível das colunas do Excel
+    # Identificação flexível de colunas
     ref_col = cols_map.get('REFERÊNCIA') or cols_map.get('REFERENCIA') or cols_map.get('REF') or raw_df.columns[0]
     desc_col = cols_map.get('DESCRIÇÃO') or cols_map.get('DESCRICAO') or cols_map.get('PRODUTO') or raw_df.columns[1]
     loja_nom_col = cols_map.get('LOJA') or cols_map.get('NOME LOJA') or cols_map.get('LOJA CLIENTE') or raw_df.columns[2]
     loja_num_col = cols_map.get('Nº LOJA') or cols_map.get('NO LOJA') or cols_map.get('COD LOJA') or raw_df.columns[3]
-    venda_col = cols_map.get('VENDA') or cols_map.get('QTD VENDA') or cols_map.get('QUANTIDADE VENDA') or cols_map.get('VENDA UN')
-    est_col = cols_map.get('ESTOQUE') or cols_map.get('ESTOQUE ATUAL') or cols_map.get('SALDO ESTOQUE')
     
     consolidated = pd.DataFrame()
     consolidated['Referencia'] = raw_df[ref_col].astype(str)
@@ -112,24 +110,30 @@ def load_sell_out_vertical():
     consolidated['Nº Loja Sistema'] = raw_df[loja_num_col].astype(str)
     consolidated['Ordem_Arquivo'] = raw_df['Ordem_Arquivo']
     
-    # Tratamento das colunas de valores mensais
-    consolidated['Venda_Mes'] = pd.to_numeric(raw_df[venda_col] if venda_col else 0, errors='coerce').fillna(0)
-    consolidated['Estoque_Mes'] = pd.to_numeric(raw_df[est_col] if est_col else 0, errors='coerce').fillna(0)
+    # Função segura para obtenção de séries numéricas
+    def safe_get_series(possible_names):
+        for name in possible_names:
+            actual_col = cols_map.get(name)
+            if actual_col and actual_col in raw_df.columns:
+                return pd.to_numeric(raw_df[actual_col], errors='coerce').fillna(0)
+        return pd.Series(0, index=raw_df.index)
 
-    # Identificar o último mês carregado e os últimos 3 meses
+    consolidated['Venda_Mes'] = safe_get_series(['VENDA', 'QTD VENDA', 'QUANTIDADE VENDA', 'VENDA UN', 'VENDA AGO'])
+    consolidated['Estoque_Mes'] = safe_get_series(['ESTOQUE', 'ESTOQUE ATUAL', 'SALDO ESTOQUE', 'ESTOQUE ULT MES'])
+
     max_ordem = consolidated['Ordem_Arquivo'].max()
     ordem_ult3 = max_ordem - 2
 
-    # Agrupamento e Cálculos Dinâmicos
+    # Agrupamento e Cálculos
     def calc_group(g):
         venda_acumulada = g['Venda_Mes'].sum()
         venda_3m = g[g['Ordem_Arquivo'] >= ordem_ult3]['Venda_Mes'].sum()
         
-        # Dados do último mês
         g_ult = g[g['Ordem_Arquivo'] == max_ordem]
         venda_ult_mes = g_ult['Venda_Mes'].sum() if not g_ult.empty else 0
-        estoque_ult_mes = g_ult['Estoque_Mes'].last_valid_index()
-        estoque_val = g.loc[estoque_ult_mes, 'Estoque_Mes'] if estoque_ult_mes is not None else 0
+        
+        estoque_ult_mes_idx = g_ult['Estoque_Mes'].last_valid_index() if not g_ult.empty else None
+        estoque_val = g.loc[estoque_ult_mes_idx, 'Estoque_Mes'] if estoque_ult_mes_idx is not None else 0
         
         vdm = venda_3m / 90.0 if venda_3m > 0 else 0
         giro = ((venda_ult_mes / (estoque_val + 0.0001)) * 100) if estoque_val > 0 else 0
