@@ -21,22 +21,21 @@ LOCAL_FILE = "Sell_in_temp.xlsx"
 @st.cache_data
 def load_sell_in_data():
     try:
-        # Download do ficheiro do Drive se ainda não existir localmente no container
+        url = f"https://drive.google.com/uc?id={FILE_ID_SELL_IN}"
+        
+        # Download com parâmetro fuzzy ativado
         if not os.path.exists(LOCAL_FILE):
-            url = f"https://drive.google.com/uc?id={FILE_ID_SELL_IN}"
-            gdown.download(url, LOCAL_FILE, quiet=True)
+            gdown.download(url, LOCAL_FILE, quiet=True, fuzzy=True)
             
-        # Leitura da folha de dados
         df = pd.read_excel(LOCAL_FILE, sheet_name="1-Dados", engine="openpyxl")
         
-        # APLICAÇÃO DAS REGRAS DE OURO:
-        # 1. Filtro de Status = 5 ou 6 (Apenas faturados com NF)
+        # REGRAS DE OURO:
+        # 1. Filtro de Status = 5 ou 6
         df = df[df['STATUS'].isin([5, 6])]
         
         # 2. Filtro de Almoxarifado = 20
         df = df[df['Almox.'].astype(str).str.strip() == '20']
         
-        # Tratar tipos de dados das colunas numéricas e datas
         df['Emissao'] = pd.to_datetime(df['Emissao'], errors='coerce')
         df['Quantidade'] = pd.to_numeric(df['Quantidade'], errors='coerce').fillna(0)
         df['Vlr.Total'] = pd.to_numeric(df['Vlr.Total'], errors='coerce').fillna(0)
