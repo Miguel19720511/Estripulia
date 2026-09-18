@@ -33,7 +33,7 @@ FILE_IDS = {
 }
 
 # -----------------------------------------------------------------------------
-# CARREGAMENTO E PROCESSAMENTO
+# FUNÇÕES DE CARREGAMENTO
 # -----------------------------------------------------------------------------
 @st.cache_data
 def load_sell_in_data():
@@ -72,8 +72,39 @@ def load_sell_in_data():
         return pd.DataFrame()
 
 @st.cache_data
+def load_nomenclatura_lojas():
+    local_file = "nomenclatura_lojas.xlsx"
+    try:
+        url = f"https://drive.google.com/uc?id={FILE_IDS['NOMENCLATURA_LOJAS']}"
+        if not os.path.exists(local_file):
+            gdown.download(url, local_file, quiet=True)
+            
+        df = pd.read_excel(local_file, engine="openpyxl")
+        df.columns = [str(c).strip().upper() for c in df.columns]
+        
+        cols_clean = {c.replace('Ç','C').replace('Ã','A').replace('Õ','O').replace('É','E'): c for c in df.columns}
+        
+        loja_nom = cols_clean.get('LOJA') or cols_clean.get('NOMENCLATURA') or df.columns[0]
+        cod_master = cols_clean.get('CODIGO MASTER') or cols_clean.get('MASTER') or df.columns[1]
+        num_loja = cols_clean.get('NO LOJA') or cols_clean.get('NUMERO LOJA') or cols_clean.get('LOJA SISTEMA') or df.columns[2]
+        cnpj_col = cols_clean.get('CNPJ') or df.columns[3] if len(df.columns) > 3 else None
+        
+        loja_df = pd.DataFrame()
+        loja_df['Loja (Nomenclatura)'] = df[loja_nom].astype(str).str.strip()
+        loja_df['Código Máster'] = df[cod_master].astype(str).str.strip()
+        loja_df['Nº Loja Sistema'] = df[num_loja].astype(str).str.strip()
+        loja_df['CNPJ'] = df[cnpj_col].astype(str).str.strip() if cnpj_col else "N/A"
+        
+        return loja_df.drop_duplicates(subset=['Loja (Nomenclatura)'])
+    except Exception as e:
+        st.warning(f"Aviso ao carregar tabela de lojas: {e}")
+        return pd.DataFrame()
+
+@st.cache_data
 def load_sell_out_vertical():
+    df_lojas = load_nomenclatura_lojas()
     all_rows = []
+    
     for idx, file_id in enumerate(FILE_IDS['SELL_OUT_FILES']):
         local_file = f"sell_out_{idx}.xlsx"
         try:
@@ -82,7 +113,7 @@ def load_sell_out_vertical():
                 gdown.download(url, local_file, quiet=True)
             
             df = pd.read_excel(local_file, engine="openpyxl")
-            if df.empty or df.shape[1] < 6:
+            if df.empty or df.shape[1] < 5:
                 continue
                 
             df['Ordem_Arquivo'] = idx
@@ -95,30 +126,34 @@ def load_sell_out_vertical():
 
     raw_df = pd.concat(all_rows, ignore_index=True)
     
-    # Mapeamento por Posição de Coluna (Índice Direto)
-    # Ajuste dos índices para alinhar Referência, Descrição, Loja, Vendas e Estoque
     consolidated = pd.DataFrame()
+    # Posição 0: Descrição do Produto | Posição 1: Referência/Código Curto
+    consolidated['Descrição'] = raw_df.iloc[:, 0].astype(str).str.strip()
+    consolidated['Referencia'] = raw_df.iloc[:, 1].astype(str).str.strip()
     
-    # 0: Código/Referência real | 1: Descrição do Produto
-    consolidated['Referencia'] = raw_df.iloc[:, 1].astype(str)
-    consolidated['Descrição'] = raw_df.iloc[:, 0].astype(str)
-    
-    # Colunas de identificação da Loja
-    consolidated['Loja (Nomenclatura)'] = raw_df.iloc[:, 2].astype(str)
-    consolidated['Nº Loja Sistema'] = raw_df.iloc[:, 3].astype(str)
+    # Posição 2: Nome da Loja vindo do Sell-Out
+    consolidated['Loja (Nomenclatura)'] = raw_df.iloc[:, 2].astype(str).str.strip()
     consolidated['Ordem_Arquivo'] = raw_df['Ordem_Arquivo']
     
-    # Vendas e Estoques mapeados das colunas numéricas
-    venda_series = pd.to_numeric(raw_df.iloc[:, 4], errors='coerce').fillna(0)
-    estoque_series = pd.to_numeric(raw_df.iloc[:, 5], errors='coerce').fillna(0)
-    
-    consolidated['Venda_Mes'] = venda_series
-    consolidated['Estoque_Mes'] = estoque_series
+    # Vendas e Estoque
+    consolidated['Venda_Mes'] = pd.to_numeric(raw_df.iloc[:, 4], errors='coerce').fillna(0)
+    consolidated['Estoque_Mes'] = pd.to_numeric(raw_df.iloc[:, 5], errors='coerce').fillna(0)
+
+    # Cruzamento dinâmico com a tabela de Nomenclatura das Lojas (De-Para)
+    if not df_lojas.empty:
+        consolidated = consolidated.merge(df_lojas, on='Loja (Nomenclatura)', how='left')
+        consolidated['Código Máster'] = consolidated['Código Máster'].fillna("Pendente Cadastro")
+        consolidated['Nº Loja Sistema'] = consolidated['Nº Loja Sistema'].fillna("Pendente")
+        consolidated['CNPJ'] = consolidated['CNPJ'].fillna("Pendente")
+    else:
+        consolidated['Código Máster'] = "N/A"
+        consolidated['Nº Loja Sistema'] = raw_df.iloc[:, 3].astype(str).str.strip()
+        consolidated['CNPJ'] = "N/A"
 
     max_ordem = consolidated['Ordem_Arquivo'].max()
     ordem_ult3 = max(0, max_ordem - 2)
 
-    # Consolidação Vertical Única por SKU e Loja
+    # Consolidação e Cálculos
     def calc_group(g):
         venda_acumulada = g['Venda_Mes'].sum()
         venda_3m = g[g['Ordem_Arquivo'] >= ordem_ult3]['Venda_Mes'].sum()
@@ -141,13 +176,13 @@ def load_sell_out_vertical():
         })
 
     final_df = consolidated.groupby(
-        ['Referencia', 'Descrição', 'Loja (Nomenclatura)', 'Nº Loja Sistema'], as_index=False
+        ['Referencia', 'Descrição', 'Loja (Nomenclatura)', 'Código Máster', 'Nº Loja Sistema', 'CNPJ'], as_index=False
     ).apply(calc_group)
 
     return final_df
 
 # Carregamento
-with st.spinner("A consolidar vendas, a calcular Venda Acumulada e Giro..."):
+with st.spinner("A cruzar cadastro de lojas e a consolidar vendas de Sell-Out..."):
     df_sell_in = load_sell_in_data()
     df_sell_out_vert = load_sell_out_vertical()
 
@@ -184,7 +219,7 @@ with tab1:
         )
         st.plotly_chart(fig_ano, use_container_width=True)
 
-# TAB 2: SELL-OUT VERTICAL
+# TAB 2: SELL-OUT VERTICAL COM DE-PARA DE LOJAS
 with tab2:
     st.subheader("Sell-Out Consolidado Vertical (Empilhado por Loja e Produto)")
     
@@ -203,15 +238,15 @@ with tab2:
             ]
 
         ordem_colunas = [
-            'Referencia', 'Descrição', 'Loja (Nomenclatura)', 'Nº Loja Sistema',
+            'Referencia', 'Descrição', 'Loja (Nomenclatura)', 'Código Máster', 'Nº Loja Sistema', 'CNPJ',
             'Venda Acumulada', 'Venda 3M', 'Venda Últ. Mês', 'Estoque Últ. Mês',
             'Giro (%)', 'Dias de Cobertura'
         ]
         st.dataframe(df_filtered[ordem_colunas], use_container_width=True)
     else:
-        st.info("A processar relatórios de Sell-Out para consolidação e cálculo de Venda Acumulada...")
+        st.info("A processar de-para de lojas e relatórios de Sell-Out...")
 
 # TAB 3: SAÚDE DO ESTOQUE
 with tab3:
     st.subheader("Diagnóstico de Estoque e Sugestão de Reposição")
-    st.info("Painel acoplado à estrutura consolidada vertical.")
+    st.info("Painel acoplado ao cadastro mestre de lojas e produtos.")
