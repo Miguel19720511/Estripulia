@@ -85,8 +85,8 @@ def load_sell_out_vertical():
             if df.empty:
                 continue
                 
-            # Tratamento para consolidação vertical
             df.columns = [str(c).strip() for c in df.columns]
+            df['Ordem_Arquivo'] = idx  # Identifica a sequência temporal dos meses
             all_rows.append(df)
         except Exception:
             continue
@@ -94,56 +94,64 @@ def load_sell_out_vertical():
     if not all_rows:
         return pd.DataFrame()
 
-    # Consolidação dos arquivos em formato vertical
     raw_df = pd.concat(all_rows, ignore_index=True)
-    
-    # Mapeamento dinâmico de colunas para garantir a ordem exata requerida
     cols_map = {str(c).strip().upper(): c for c in raw_df.columns}
     
+    # Mapeamento flexível das colunas do Excel
     ref_col = cols_map.get('REFERÊNCIA') or cols_map.get('REFERENCIA') or cols_map.get('REF') or raw_df.columns[0]
     desc_col = cols_map.get('DESCRIÇÃO') or cols_map.get('DESCRICAO') or cols_map.get('PRODUTO') or raw_df.columns[1]
     loja_nom_col = cols_map.get('LOJA') or cols_map.get('NOME LOJA') or cols_map.get('LOJA CLIENTE') or raw_df.columns[2]
     loja_num_col = cols_map.get('Nº LOJA') or cols_map.get('NO LOJA') or cols_map.get('COD LOJA') or raw_df.columns[3]
+    venda_col = cols_map.get('VENDA') or cols_map.get('QTD VENDA') or cols_map.get('QUANTIDADE VENDA') or cols_map.get('VENDA UN')
+    est_col = cols_map.get('ESTOQUE') or cols_map.get('ESTOQUE ATUAL') or cols_map.get('SALDO ESTOQUE')
     
-    # Criar tabela vertical consolidada
     consolidated = pd.DataFrame()
     consolidated['Referencia'] = raw_df[ref_col].astype(str)
     consolidated['Descrição'] = raw_df[desc_col].astype(str)
     consolidated['Loja (Nomenclatura)'] = raw_df[loja_nom_col].astype(str)
     consolidated['Nº Loja Sistema'] = raw_df[loja_num_col].astype(str)
+    consolidated['Ordem_Arquivo'] = raw_df['Ordem_Arquivo']
     
-    # Métricas calculadas/extraídas
-    venda_acum = cols_map.get('VENDA ACUMULADA') or cols_map.get('VENDA ACUM')
-    venda_3m = cols_map.get('VENDA 3M') or cols_map.get('VENDA ULT 3M')
-    venda_ult_mes = cols_map.get('VENDA AGO') or cols_map.get('VENDA ULT MES')
-    estoque_ult_mes = cols_map.get('ESTOQUE ULT MES') or cols_map.get('ESTOQUE')
-    
-    consolidated['Venda Acumulada'] = pd.to_numeric(raw_df[venda_acum] if venda_acum else 0, errors='coerce').fillna(0)
-    consolidated['Venda 3M'] = pd.to_numeric(raw_df[venda_3m] if venda_3m else 0, errors='coerce').fillna(0)
-    consolidated['Venda Ago'] = pd.to_numeric(raw_df[venda_ult_mes] if venda_ult_mes else 0, errors='coerce').fillna(0)
-    consolidated['Estoque Últ. Mês'] = pd.to_numeric(raw_df[estoque_ult_mes] if estoque_ult_mes else 0, errors='coerce').fillna(0)
-    
-    # Cálculo do Giro (%) e Dias de Cobertura
-    vdm = consolidated['Venda 3M'] / 90.0
-    consolidated['Giro (%)'] = ((consolidated['Venda Ago'] / (consolidated['Estoque Últ. Mês'] + 0.0001)) * 100).round(2)
-    consolidated['Dias de Cobertura'] = (consolidated['Estoque Últ. Mês'] / (vdm + 0.0001)).round(1)
+    # Tratamento das colunas de valores mensais
+    consolidated['Venda_Mes'] = pd.to_numeric(raw_df[venda_col] if venda_col else 0, errors='coerce').fillna(0)
+    consolidated['Estoque_Mes'] = pd.to_numeric(raw_df[est_col] if est_col else 0, errors='coerce').fillna(0)
 
-    # Agrupamento Vertical Único (Elimina duplicidades e empilha corretamente)
+    # Identificar o último mês carregado e os últimos 3 meses
+    max_ordem = consolidated['Ordem_Arquivo'].max()
+    ordem_ult3 = max_ordem - 2
+
+    # Agrupamento e Cálculos Dinâmicos
+    def calc_group(g):
+        venda_acumulada = g['Venda_Mes'].sum()
+        venda_3m = g[g['Ordem_Arquivo'] >= ordem_ult3]['Venda_Mes'].sum()
+        
+        # Dados do último mês
+        g_ult = g[g['Ordem_Arquivo'] == max_ordem]
+        venda_ult_mes = g_ult['Venda_Mes'].sum() if not g_ult.empty else 0
+        estoque_ult_mes = g_ult['Estoque_Mes'].last_valid_index()
+        estoque_val = g.loc[estoque_ult_mes, 'Estoque_Mes'] if estoque_ult_mes is not None else 0
+        
+        vdm = venda_3m / 90.0 if venda_3m > 0 else 0
+        giro = ((venda_ult_mes / (estoque_val + 0.0001)) * 100) if estoque_val > 0 else 0
+        cobertura = (estoque_val / (vdm + 0.0001)) if vdm > 0 else (999 if estoque_val > 0 else 0)
+
+        return pd.Series({
+            'Venda Acumulada': venda_acumulada,
+            'Venda 3M': venda_3m,
+            'Venda Últ. Mês': venda_ult_mes,
+            'Estoque Últ. Mês': estoque_val,
+            'Giro (%)': round(giro, 2),
+            'Dias de Cobertura': round(cobertura, 1)
+        })
+
     final_df = consolidated.groupby(
         ['Referencia', 'Descrição', 'Loja (Nomenclatura)', 'Nº Loja Sistema'], as_index=False
-    ).agg({
-        'Venda Acumulada': 'sum',
-        'Venda 3M': 'sum',
-        'Venda Ago': 'sum',
-        'Estoque Últ. Mês': 'last',
-        'Giro (%)': 'mean',
-        'Dias de Cobertura': 'last'
-    })
+    ).apply(calc_group)
 
     return final_df
 
-# Carregamento dos Dados
-with st.spinner("A estruturar e empilhar dados de Sell-Out no formato vertical..."):
+# Carregamento
+with st.spinner("A consolidar vendas, a calcular Venda Acumulada e Giro..."):
     df_sell_in = load_sell_in_data()
     df_sell_out_vert = load_sell_out_vertical()
 
@@ -184,31 +192,30 @@ with tab1:
 with tab2:
     st.subheader("Sell-Out Consolidado Vertical (Empilhado por Loja e Produto)")
     
-    col_f1, col_f2 = st.columns(2)
-    loja_filtro = col_f1.multiselect("Filtrar por Loja", options=df_sell_out_vert['Loja (Nomenclatura)'].unique() if not df_sell_out_vert.empty else [])
-    busca_ref = col_f2.text_input("Buscar por Referência ou Descrição")
+    if not df_sell_out_vert.empty:
+        col_f1, col_f2 = st.columns(2)
+        loja_filtro = col_f1.multiselect("Filtrar por Loja", options=sorted(df_sell_out_vert['Loja (Nomenclatura)'].unique()))
+        busca_ref = col_f2.text_input("Buscar por Referência ou Descrição")
 
-    df_filtered = df_sell_out_vert.copy()
-    if loja_filtro:
-        df_filtered = df_filtered[df_filtered['Loja (Nomenclatura)'].isin(loja_filtro)]
-    if busca_ref:
-        df_filtered = df_filtered[
-            df_filtered['Referencia'].str.contains(busca_ref, case=False, na=False) |
-            df_filtered['Descrição'].str.contains(busca_ref, case=False, na=False)
-        ]
+        df_filtered = df_sell_out_vert.copy()
+        if loja_filtro:
+            df_filtered = df_filtered[df_filtered['Loja (Nomenclatura)'].isin(loja_filtro)]
+        if busca_ref:
+            df_filtered = df_filtered[
+                df_filtered['Referencia'].str.contains(busca_ref, case=False, na=False) |
+                df_filtered['Descrição'].str.contains(busca_ref, case=False, na=False)
+            ]
 
-    if not df_filtered.empty:
-        # Exibição estrita com a ordem de colunas solicitada
         ordem_colunas = [
             'Referencia', 'Descrição', 'Loja (Nomenclatura)', 'Nº Loja Sistema',
-            'Venda Acumulada', 'Venda 3M', 'Venda Ago', 'Estoque Últ. Mês',
+            'Venda Acumulada', 'Venda 3M', 'Venda Últ. Mês', 'Estoque Últ. Mês',
             'Giro (%)', 'Dias de Cobertura'
         ]
         st.dataframe(df_filtered[ordem_colunas], use_container_width=True)
     else:
-        st.info("A gerar consolidação vertical dos relatórios de Sell-Out...")
+        st.info("A processar relatórios de Sell-Out para consolidação e cálculo de Venda Acumulada...")
 
 # TAB 3: SAÚDE DO ESTOQUE
 with tab3:
     st.subheader("Diagnóstico de Estoque e Sugestão de Reposição")
-    st.info("Painel de cálculo acoplado à base vertical de Sell-out.")
+    st.info("Painel acoplado à estrutura consolidada vertical.")
