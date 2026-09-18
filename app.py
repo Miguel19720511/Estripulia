@@ -23,29 +23,44 @@ def load_sell_in_data():
     try:
         url = f"https://drive.google.com/uc?id={FILE_ID_SELL_IN}"
         
-        # Download do ficheiro se não existir localmente no container
-        if not os.path.exists(LOCAL_FILE):
-            gdown.download(url, LOCAL_FILE, quiet=True)
+        # Forçar re-download do ficheiro limpo sem 1ª linha
+        if os.path.exists(LOCAL_FILE):
+            os.remove(LOCAL_FILE)
             
-        # Leitura direta da aba 1-Dados (com cabeçalho na linha 1)
+        gdown.download(url, LOCAL_FILE, quiet=True)
+            
+        # Leitura da folha 1-Dados
         df = pd.read_excel(LOCAL_FILE, sheet_name="1-Dados", engine="openpyxl")
         
-        # Limpeza de espaços em branco nos nomes das colunas
-        df.columns = [str(c).strip() for c in df.columns]
+        # Mapeamento dinâmico de colunas (ignora espaços e maiúsculas/minúsculas)
+        cols = {str(c).strip().upper(): c for c in df.columns}
+        
+        status_col = cols.get('STATUS')
+        almox_col = cols.get('ALMOX.') or cols.get('ALMOXARIFADO') or cols.get('ALMOX')
+        
+        if not status_col:
+            st.error("A coluna STATUS não foi encontrada na primeira linha da folha '1-Dados'.")
+            return pd.DataFrame()
 
         # REGRAS DE OURO
         # 1. Filtro de Status = 5 ou 6
-        df['STATUS'] = pd.to_numeric(df['STATUS'], errors='coerce')
-        df = df[df['STATUS'].isin([5, 6])]
+        df[status_col] = pd.to_numeric(df[status_col], errors='coerce')
+        df = df[df[status_col].isin([5, 6])]
         
         # 2. Filtro de Almoxarifado = 20
-        df = df[df['Almox.'].astype(str).str.strip().str.replace('.0', '', regex=False) == '20']
+        if almox_col:
+            df = df[df[almox_col].astype(str).str.strip().str.replace('.0', '', regex=False) == '20']
         
-        # Tratar tipos de dados de datas e valores numéricos
-        df['Emissao'] = pd.to_datetime(df['Emissao'], errors='coerce')
-        df['Quantidade'] = pd.to_numeric(df['Quantidade'], errors='coerce').fillna(0)
-        df['Vlr.Total'] = pd.to_numeric(df['Vlr.Total'], errors='coerce').fillna(0)
-        df['Vlr.Bruto'] = pd.to_numeric(df['Vlr.Bruto'], errors='coerce').fillna(0)
+        # Tratar datas e valores numéricos
+        col_emissao = cols.get('EMISSAO') or cols.get('EMISSÃO') or 'Emissao'
+        col_qtd = cols.get('QUANTIDADE') or 'Quantidade'
+        col_total = cols.get('VLR.TOTAL') or 'Vlr.Total'
+        col_bruto = cols.get('VLR.BRUTO') or 'Vlr.Bruto'
+
+        df['Emissao'] = pd.to_datetime(df[col_emissao], errors='coerce')
+        df['Quantidade'] = pd.to_numeric(df[col_qtd], errors='coerce').fillna(0)
+        df['Vlr.Total'] = pd.to_numeric(df[col_total], errors='coerce').fillna(0)
+        df['Vlr.Bruto'] = pd.to_numeric(df[col_bruto], errors='coerce').fillna(0)
         
         return df
     except Exception as e:
