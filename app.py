@@ -33,7 +33,7 @@ FILE_IDS = {
 }
 
 # -----------------------------------------------------------------------------
-# FUNÇÕES DE PROCESSAMENTO
+# CARREGAMENTO E PROCESSAMENTO
 # -----------------------------------------------------------------------------
 @st.cache_data
 def load_sell_in_data():
@@ -72,8 +72,8 @@ def load_sell_in_data():
         return pd.DataFrame()
 
 @st.cache_data
-def load_sell_out_consolidated():
-    all_data = []
+def load_sell_out_vertical():
+    all_rows = []
     for idx, file_id in enumerate(FILE_IDS['SELL_OUT_FILES']):
         local_file = f"sell_out_{idx}.xlsx"
         try:
@@ -82,21 +82,70 @@ def load_sell_out_consolidated():
                 gdown.download(url, local_file, quiet=True)
             
             df = pd.read_excel(local_file, engine="openpyxl")
-            # Leitura flexível para consolidação
-            if not df.empty:
-                df.columns = [str(c).strip() for c in df.columns]
-                all_data.append(df)
+            if df.empty:
+                continue
+                
+            # Tratamento para consolidação vertical
+            df.columns = [str(c).strip() for c in df.columns]
+            all_rows.append(df)
         except Exception:
             continue
             
-    if all_data:
-        return pd.concat(all_data, ignore_index=True)
-    return pd.DataFrame()
+    if not all_rows:
+        return pd.DataFrame()
 
-# Carregamento
-with st.spinner("A processar e a consolidar todas as planilhas do Google Drive..."):
+    # Consolidação dos arquivos em formato vertical
+    raw_df = pd.concat(all_rows, ignore_index=True)
+    
+    # Mapeamento dinâmico de colunas para garantir a ordem exata requerida
+    cols_map = {str(c).strip().upper(): c for c in raw_df.columns}
+    
+    ref_col = cols_map.get('REFERÊNCIA') or cols_map.get('REFERENCIA') or cols_map.get('REF') or raw_df.columns[0]
+    desc_col = cols_map.get('DESCRIÇÃO') or cols_map.get('DESCRICAO') or cols_map.get('PRODUTO') or raw_df.columns[1]
+    loja_nom_col = cols_map.get('LOJA') or cols_map.get('NOME LOJA') or cols_map.get('LOJA CLIENTE') or raw_df.columns[2]
+    loja_num_col = cols_map.get('Nº LOJA') or cols_map.get('NO LOJA') or cols_map.get('COD LOJA') or raw_df.columns[3]
+    
+    # Criar tabela vertical consolidada
+    consolidated = pd.DataFrame()
+    consolidated['Referencia'] = raw_df[ref_col].astype(str)
+    consolidated['Descrição'] = raw_df[desc_col].astype(str)
+    consolidated['Loja (Nomenclatura)'] = raw_df[loja_nom_col].astype(str)
+    consolidated['Nº Loja Sistema'] = raw_df[loja_num_col].astype(str)
+    
+    # Métricas calculadas/extraídas
+    venda_acum = cols_map.get('VENDA ACUMULADA') or cols_map.get('VENDA ACUM')
+    venda_3m = cols_map.get('VENDA 3M') or cols_map.get('VENDA ULT 3M')
+    venda_ult_mes = cols_map.get('VENDA AGO') or cols_map.get('VENDA ULT MES')
+    estoque_ult_mes = cols_map.get('ESTOQUE ULT MES') or cols_map.get('ESTOQUE')
+    
+    consolidated['Venda Acumulada'] = pd.to_numeric(raw_df[venda_acum] if venda_acum else 0, errors='coerce').fillna(0)
+    consolidated['Venda 3M'] = pd.to_numeric(raw_df[venda_3m] if venda_3m else 0, errors='coerce').fillna(0)
+    consolidated['Venda Ago'] = pd.to_numeric(raw_df[venda_ult_mes] if venda_ult_mes else 0, errors='coerce').fillna(0)
+    consolidated['Estoque Últ. Mês'] = pd.to_numeric(raw_df[estoque_ult_mes] if estoque_ult_mes else 0, errors='coerce').fillna(0)
+    
+    # Cálculo do Giro (%) e Dias de Cobertura
+    vdm = consolidated['Venda 3M'] / 90.0
+    consolidated['Giro (%)'] = ((consolidated['Venda Ago'] / (consolidated['Estoque Últ. Mês'] + 0.0001)) * 100).round(2)
+    consolidated['Dias de Cobertura'] = (consolidated['Estoque Últ. Mês'] / (vdm + 0.0001)).round(1)
+
+    # Agrupamento Vertical Único (Elimina duplicidades e empilha corretamente)
+    final_df = consolidated.groupby(
+        ['Referencia', 'Descrição', 'Loja (Nomenclatura)', 'Nº Loja Sistema'], as_index=False
+    ).agg({
+        'Venda Acumulada': 'sum',
+        'Venda 3M': 'sum',
+        'Venda Ago': 'sum',
+        'Estoque Últ. Mês': 'last',
+        'Giro (%)': 'mean',
+        'Dias de Cobertura': 'last'
+    })
+
+    return final_df
+
+# Carregamento dos Dados
+with st.spinner("A estruturar e empilhar dados de Sell-Out no formato vertical..."):
     df_sell_in = load_sell_in_data()
-    df_sell_out = load_sell_out_consolidated()
+    df_sell_out_vert = load_sell_out_vertical()
 
 # -----------------------------------------------------------------------------
 # ESTRUTURA DAS ABAS
@@ -131,35 +180,35 @@ with tab1:
         )
         st.plotly_chart(fig_ano, use_container_width=True)
 
-        st.subheader("Resumo por Ano")
-        sell_in_ano['Vlr.Total'] = sell_in_ano['Vlr.Total'].apply(lambda x: f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-        sell_in_ano['Quantidade'] = sell_in_ano['Quantidade'].apply(lambda x: f"{x:,.0f} un".replace(",", "."))
-        st.dataframe(sell_in_ano, use_container_width=True)
-
-# TAB 2: SELL-OUT & COBERTURA
+# TAB 2: SELL-OUT VERTICAL
 with tab2:
-    st.subheader("Giro Diário (VDM) e Cobertura de Estoque por Loja")
+    st.subheader("Sell-Out Consolidado Vertical (Empilhado por Loja e Produto)")
     
-    col_p1, col_p2, col_p3 = st.columns(3)
-    dias_analise = col_p1.number_input("Período de Análise (Dias)", min_value=7, max_value=180, value=30)
-    lead_time = col_p2.number_input("Lead Time de Entrega (Dias)", min_value=1, max_value=90, value=30)
-    meta_cobertura = col_p3.number_input("Meta de Cobertura Alvo (Dias)", min_value=15, max_value=120, value=60)
+    col_f1, col_f2 = st.columns(2)
+    loja_filtro = col_f1.multiselect("Filtrar por Loja", options=df_sell_out_vert['Loja (Nomenclatura)'].unique() if not df_sell_out_vert.empty else [])
+    busca_ref = col_f2.text_input("Buscar por Referência ou Descrição")
 
-    if not df_sell_out.empty:
-        st.markdown("### Resumo de Vendas e Estoque Consolidado")
-        st.dataframe(df_sell_out.head(100), use_container_width=True)
+    df_filtered = df_sell_out_vert.copy()
+    if loja_filtro:
+        df_filtered = df_filtered[df_filtered['Loja (Nomenclatura)'].isin(loja_filtro)]
+    if busca_ref:
+        df_filtered = df_filtered[
+            df_filtered['Referencia'].str.contains(busca_ref, case=False, na=False) |
+            df_filtered['Descrição'].str.contains(busca_ref, case=False, na=False)
+        ]
+
+    if not df_filtered.empty:
+        # Exibição estrita com a ordem de colunas solicitada
+        ordem_colunas = [
+            'Referencia', 'Descrição', 'Loja (Nomenclatura)', 'Nº Loja Sistema',
+            'Venda Acumulada', 'Venda 3M', 'Venda Ago', 'Estoque Últ. Mês',
+            'Giro (%)', 'Dias de Cobertura'
+        ]
+        st.dataframe(df_filtered[ordem_colunas], use_container_width=True)
     else:
-        st.info("Sincronizando a consolidação em memória das 11 bases de Sell-out...")
+        st.info("A gerar consolidação vertical dos relatórios de Sell-Out...")
 
 # TAB 3: SAÚDE DO ESTOQUE
 with tab3:
     st.subheader("Diagnóstico de Estoque e Sugestão de Reposição")
-    
-    col_m1, col_m2, col_m3 = st.columns(3)
-    col_m1.metric("SKUs em Ruptura Crítica", "0 itens", help="Estoque = 0 com histórico de venda ativo")
-    col_m2.metric("SKUs em Excessos (> 180 Dias)", "0 itens", help="Cobertura superior a 180 dias de venda")
-    col_m3.metric("Sugestão Total de Compras (R$)", "R$ 0,00")
-
-    st.markdown("---")
-    st.markdown("#### Matriz de Reposição por Loja e Produto")
-    st.info("Cálculo em lote ativo: Giro Diário x (Meta Cobertura + Lead Time) - Estoque Atual.")
+    st.info("Painel de cálculo acoplado à base vertical de Sell-out.")
