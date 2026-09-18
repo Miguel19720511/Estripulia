@@ -1,74 +1,118 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import requests
-import io
+import gdown
+import os
 
-# Configuração da Página
-st.set_page_config(page_title="Dashboard Comercial Estripulia", layout="wide")
+# Configuração inicial da página
+st.set_page_config(
+    page_title="Dashboard Comercial Estripulia",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
 st.title("📊 Painel Comercial Estripulia — Sell-In & Sell-Out")
-st.markdown("Análise de Giro, Dias de Cobertura, Saúde de Estoque e Curva ABC")
+st.markdown("Análise Comercial, Giro de Estoque e Cobertura")
 
 # ID do ficheiro Sell In no Google Drive
 FILE_ID_SELL_IN = "1bhptYVaijAOLiX-7Yz6EEG-lM07dV4Va"
+LOCAL_FILE = "Sell_in_temp.xlsx"
 
 @st.cache_data
-def load_sell_in_drive():
+def load_sell_in_data():
     try:
-        # Fazer o download direto do ficheiro usando sessão para contornar a confirmação do Drive
-        session = requests.Session()
-        url = f"https://drive.google.com/uc?export=download&id={FILE_ID_SELL_IN}"
-        response = session.get(url)
+        # Download do ficheiro do Drive se ainda não existir localmente no container
+        if not os.path.exists(LOCAL_FILE):
+            url = f"https://drive.google.com/uc?id={FILE_ID_SELL_IN}"
+            gdown.download(url, LOCAL_FILE, quiet=True)
+            
+        # Leitura da folha de dados
+        df = pd.read_excel(LOCAL_FILE, sheet_name="1-Dados", engine="openpyxl")
         
-        # Leitura do ficheiro Excel com engine openpyxl
-        df = pd.read_excel(io.BytesIO(response.content), sheet_name="1-Dados", engine="openpyxl")
-        
-        # REGRAS DE OURO:
-        # 1. Apenas STATUS = 5 ou 6
+        # APLICAÇÃO DAS REGRAS DE OURO:
+        # 1. Filtro de Status = 5 ou 6 (Apenas faturados com NF)
         df = df[df['STATUS'].isin([5, 6])]
         
-        # 2. Apenas Almox. = 20
+        # 2. Filtro de Almoxarifado = 20
         df = df[df['Almox.'].astype(str).str.strip() == '20']
         
+        # Tratar tipos de dados das colunas numéricas e datas
         df['Emissao'] = pd.to_datetime(df['Emissao'], errors='coerce')
+        df['Quantidade'] = pd.to_numeric(df['Quantidade'], errors='coerce').fillna(0)
+        df['Vlr.Total'] = pd.to_numeric(df['Vlr.Total'], errors='coerce').fillna(0)
+        df['Vlr.Bruto'] = pd.to_numeric(df['Vlr.Bruto'], errors='coerce').fillna(0)
+        
         return df
     except Exception as e:
-        st.error(f"Erro ao carregar dados do Drive: {e}")
+        st.error(f"Erro ao carregar dados do Google Drive: {e}")
         return pd.DataFrame()
 
-# Carregamento
-with st.spinner("Conectando ao Google Drive e aplicando Regras de Ouro..."):
-    df_sell_in = load_sell_in_drive()
+# Carregamento dos dados com feedback visual
+with st.spinner("A carregar dados do Google Drive e a aplicar as Regras de Ouro..."):
+    df_sell_in = load_sell_in_data()
 
-# Visualização
-tab1, tab2, tab3 = st.tabs(["📈 Visão Executiva (Sell-In)", "🏪 Sell-Out & Cobertura por Loja", "📦 Saúde do Estoque & SKUs"])
+# Estrutura em separadores (Tabs)
+tab1, tab2, tab3 = st.tabs([
+    "📈 Visão Executiva (Sell-In)", 
+    "🏪 Sell-Out & Cobertura por Loja", 
+    "📦 Saúde do Estoque & SKUs"
+])
 
+# -----------------------------------------------------------------------------
+# TAB 1: VISÃO EXECUTIVA (SELL-IN)
+# -----------------------------------------------------------------------------
 with tab1:
     st.subheader("Faturamento Efetivo de Sell-In (Status 5 e 6 | Almoxarifado 20)")
+    
     if not df_sell_in.empty:
-        df_sell_in['Quantidade'] = pd.to_numeric(df_sell_in['Quantidade'], errors='coerce').fillna(0)
-        df_sell_in['Vlr.Total'] = pd.to_numeric(df_sell_in['Vlr.Total'], errors='coerce').fillna(0)
-        df_sell_in['Vlr.Bruto'] = pd.to_numeric(df_sell_in['Vlr.Bruto'], errors='coerce').fillna(0)
-
+        # Indicadores Globais
         total_qtd = df_sell_in['Quantidade'].sum()
         total_liq = df_sell_in['Vlr.Total'].sum()
         total_bruto = df_sell_in['Vlr.Bruto'].sum()
 
         col1, col2, col3 = st.columns(3)
-        col1.metric("Volume Faturado", f"{total_qtd:,.0f} un")
-        col2.metric("Faturamento Líquido", f"R$ {total_liq:,.2f}")
-        col3.metric("Faturamento Bruto", f"R$ {total_bruto:,.2f}")
+        col1.metric("Volume Faturado", f"{total_qtd:,.0f} un".replace(",", "."))
+        col2.metric("Faturamento Líquido", f"R$ {total_liq:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        col3.metric("Faturamento Bruto", f"R$ {total_bruto:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
 
+        st.markdown("---")
+        
+        # Agrupamento por Ano
         df_sell_in['Ano'] = df_sell_in['Emissao'].dt.year
-        sell_in_ano = df_sell_in.groupby('Ano').agg({'Vlr.Total': 'sum', 'Quantidade': 'sum'}).reset_index()
+        sell_in_ano = df_sell_in.groupby('Ano').agg({
+            'Vlr.Total': 'sum', 
+            'Quantidade': 'sum'
+        }).reset_index()
 
-        fig = px.bar(sell_in_ano, x='Ano', y='Vlr.Total', text_auto='.2s',
-                     title="Evolução do Faturamento Líquido de Sell-In por Ano (R$)")
-        st.plotly_chart(fig, use_container_width=True)
+        # Gráfico de Evolução Anual
+        fig_ano = px.bar(
+            sell_in_ano, 
+            x='Ano', 
+            y='Vlr.Total', 
+            text_auto='.2s',
+            title="Evolução do Faturamento Líquido de Sell-In por Ano (R$)",
+            labels={'Vlr.Total': 'Faturamento Líquido (R$)', 'Ano': 'Ano de Emissão'}
+        )
+        st.plotly_chart(fig_ano, use_container_width=True)
 
+        # Tabela com detalhamento por Ano
+        st.subheader("Resumo por Ano")
+        sell_in_ano['Vlr.Total'] = sell_in_ano['Vlr.Total'].apply(lambda x: f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        sell_in_ano['Quantidade'] = sell_in_ano['Quantidade'].apply(lambda x: f"{x:,.0f} un".replace(",", "."))
+        st.dataframe(sell_in_ano, use_container_width=True)
+    else:
+        st.warning("Não foram encontrados registos válidos com os filtros aplicados.")
+
+# -----------------------------------------------------------------------------
+# TAB 2: SELL-OUT POR LOJA
+# -----------------------------------------------------------------------------
 with tab2:
-    st.info("Módulo de Sell-Out por Loja em carregamento dinâmico.")
+    st.subheader("Análise de Giro e Cobertura nas Lojas")
+    st.info("Módulo de leitura dos ficheiros mensais de Sell-out em consolidação.")
 
+# -----------------------------------------------------------------------------
+# TAB 3: SAÚDE DO ESTOQUE
+# -----------------------------------------------------------------------------
 with tab3:
-    st.info("Módulo de Saúde do Estoque em carregamento dinâmico.")
+    st.subheader("Alertas de Estoque Crítico e Parado")
+    st.info("Módulo de mapeamento de rupturas e remanejamento em consolidação.")
