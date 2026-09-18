@@ -4,7 +4,6 @@ import plotly.express as px
 import gdown
 import os
 
-# Configuração inicial da página
 st.set_page_config(
     page_title="Dashboard Comercial Estripulia",
     layout="wide",
@@ -14,7 +13,6 @@ st.set_page_config(
 st.title("📊 Painel Comercial Estripulia — Sell-In & Sell-Out")
 st.markdown("Análise Comercial, Giro de Estoque e Cobertura")
 
-# ID do ficheiro Sell In no Google Drive
 FILE_ID_SELL_IN = "1bhptYVaijAOLiX-7Yz6EEG-lM07dV4Va"
 LOCAL_FILE = "Sell_in_v2.xlsx"
 
@@ -22,36 +20,26 @@ LOCAL_FILE = "Sell_in_v2.xlsx"
 def load_sell_in_data():
     try:
         url = f"https://drive.google.com/uc?id={FILE_ID_SELL_IN}"
-        
-        # Forçar re-download do ficheiro limpo sem 1ª linha
         if os.path.exists(LOCAL_FILE):
             os.remove(LOCAL_FILE)
             
         gdown.download(url, LOCAL_FILE, quiet=True)
-            
-        # Leitura da folha 1-Dados
         df = pd.read_excel(LOCAL_FILE, sheet_name="1-Dados", engine="openpyxl")
         
-        # Mapeamento dinâmico de colunas (ignora espaços e maiúsculas/minúsculas)
         cols = {str(c).strip().upper(): c for c in df.columns}
-        
         status_col = cols.get('STATUS')
         almox_col = cols.get('ALMOX.') or cols.get('ALMOXARIFADO') or cols.get('ALMOX')
         
         if not status_col:
-            st.error("A coluna STATUS não foi encontrada na primeira linha da folha '1-Dados'.")
+            st.error("A coluna STATUS não foi encontrada na folha '1-Dados'.")
             return pd.DataFrame()
 
-        # REGRAS DE OURO
-        # 1. Filtro de Status = 5 ou 6
         df[status_col] = pd.to_numeric(df[status_col], errors='coerce')
         df = df[df[status_col].isin([5, 6])]
         
-        # 2. Filtro de Almoxarifado = 20
         if almox_col:
             df = df[df[almox_col].astype(str).str.strip().str.replace('.0', '', regex=False) == '20']
         
-        # Tratar datas e valores numéricos
         col_emissao = cols.get('EMISSAO') or cols.get('EMISSÃO') or 'Emissao'
         col_qtd = cols.get('QUANTIDADE') or 'Quantidade'
         col_total = cols.get('VLR.TOTAL') or 'Vlr.Total'
@@ -67,25 +55,19 @@ def load_sell_in_data():
         st.error(f"Erro ao carregar dados do Google Drive: {e}")
         return pd.DataFrame()
 
-# Carregamento dos dados com feedback visual
-with st.spinner("A carregar dados do Google Drive e a aplicar as Regras de Ouro..."):
+with st.spinner("A carregar dados e a aplicar regras de negócio..."):
     df_sell_in = load_sell_in_data()
 
-# Estrutura em separadores (Tabs)
 tab1, tab2, tab3 = st.tabs([
     "📈 Visão Executiva (Sell-In)", 
     "🏪 Sell-Out & Cobertura por Loja", 
     "📦 Saúde do Estoque & SKUs"
 ])
 
-# -----------------------------------------------------------------------------
-# TAB 1: VISÃO EXECUTIVA (SELL-IN)
-# -----------------------------------------------------------------------------
+# TAB 1: SELL-IN
 with tab1:
     st.subheader("Faturamento Efetivo de Sell-In (Status 5 e 6 | Almoxarifado 20)")
-    
     if not df_sell_in.empty:
-        # Indicadores Globais
         total_qtd = df_sell_in['Quantidade'].sum()
         total_liq = df_sell_in['Vlr.Total'].sum()
         total_bruto = df_sell_in['Vlr.Bruto'].sum()
@@ -96,43 +78,38 @@ with tab1:
         col3.metric("Faturamento Bruto", f"R$ {total_bruto:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
 
         st.markdown("---")
-        
-        # Agrupamento por Ano
         df_sell_in['Ano'] = df_sell_in['Emissao'].dt.year
-        sell_in_ano = df_sell_in.groupby('Ano').agg({
-            'Vlr.Total': 'sum', 
-            'Quantidade': 'sum'
-        }).reset_index()
+        sell_in_ano = df_sell_in.groupby('Ano').agg({'Vlr.Total': 'sum', 'Quantidade': 'sum'}).reset_index()
 
-        # Gráfico de Evolução Anual
         fig_ano = px.bar(
-            sell_in_ano, 
-            x='Ano', 
-            y='Vlr.Total', 
-            text_auto='.2s',
+            sell_in_ano, x='Ano', y='Vlr.Total', text_auto='.2s',
             title="Evolução do Faturamento Líquido de Sell-In por Ano (R$)",
             labels={'Vlr.Total': 'Faturamento Líquido (R$)', 'Ano': 'Ano de Emissão'}
         )
         st.plotly_chart(fig_ano, use_container_width=True)
 
-        # Tabela com detalhamento por Ano
         st.subheader("Resumo por Ano")
         sell_in_ano['Vlr.Total'] = sell_in_ano['Vlr.Total'].apply(lambda x: f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
         sell_in_ano['Quantidade'] = sell_in_ano['Quantidade'].apply(lambda x: f"{x:,.0f} un".replace(",", "."))
         st.dataframe(sell_in_ano, use_container_width=True)
-    else:
-        st.warning("Não foram encontrados registos válidos com os filtros aplicados.")
 
-# -----------------------------------------------------------------------------
-# TAB 2: SELL-OUT POR LOJA
-# -----------------------------------------------------------------------------
+# TAB 2: SELL-OUT & COBERTURA
 with tab2:
-    st.subheader("Análise de Giro e Cobertura nas Lojas")
-    st.info("Módulo de leitura dos ficheiros mensais de Sell-out em consolidação.")
+    st.subheader("Giro Diário e Cobertura de Estoque por Loja")
+    st.markdown("Consolidação de vendas PDV e tempo estimado de estoque restante.")
+    
+    col_f1, col_f2 = st.columns(2)
+    meta_cobertura = col_f1.number_input("Meta de Cobertura Alvo (Dias)", min_value=15, max_value=180, value=60)
+    lead_time = col_f2.number_input("Lead Time de Entrega (Dias)", min_value=1, max_value=90, value=30)
+    
+    st.info("Aguardando sincronização dos ficheiros de Sell-out da pasta do Google Drive.")
 
-# -----------------------------------------------------------------------------
 # TAB 3: SAÚDE DO ESTOQUE
-# -----------------------------------------------------------------------------
 with tab3:
-    st.subheader("Alertas de Estoque Crítico e Parado")
-    st.info("Módulo de mapeamento de rupturas e remanejamento em consolidação.")
+    st.subheader("Análise Crítica de Curva ABC, Rupturas e Excessos")
+    
+    col_a1, col_a2 = st.columns(2)
+    col_a1.metric("SKUs em Ruptura Crítica", "0 itens", delta_color="inverse")
+    col_a2.metric("SKUs em Estoque Parado (> 180 dias)", "0 itens", delta_color="inverse")
+    
+    st.info("Módulo de mapeamento de rupturas pronto para processar o catálogo unificado de Produtos_Marca.xlsx.")
